@@ -633,6 +633,40 @@ function suspiciousBash(command: string): string | undefined {
 	return patterns.find(([pattern]) => pattern.test(command))?.[1];
 }
 
+// A path segment naming a temp folder: tmp, Temp, odt_tmp, temp2, $TMPDIR, %TEMP%.
+// Not "templates".
+const TEMP_SEGMENT = /^(.*[_\-.])?(te?mp|tmpdir)([_\-.\d].*)?$/i;
+
+function isTempPath(path: string): boolean {
+	const segments = path.split(/[\\/]+/);
+	// `/tmp/../home` names a temp segment but leaves it.
+	if (segments.includes("..")) return false;
+	return segments.some((seg) => TEMP_SEGMENT.test(seg.replace(/^[$%{]+|[}%]+$/g, "")));
+}
+
+// Every risky part of the command only touches temp folders: rm -rf targets
+// are all temp paths; git reset/clean runs inside one. Relative paths count
+// from the last `cd` (or the session's folder). Anything else risky (sudo,
+// .env): false.
+function onlyTouchesTemp(command: string, cwd: string): boolean {
+	let dir = cwd;
+	for (const part of command.split(/&&|\|\||[;|\n]/)) {
+		const words = (part.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((w) => w.replace(/^["']|["']$/g, ""));
+		const at = (p: string) => (/^([\\/~$%]|[A-Za-z]:)/.test(p) ? p : `${dir}/${p}`);
+		if (words[0] === "cd" && words[1]) dir = at(words[1]);
+		if (!suspiciousBash(part)) continue;
+		if (/\bsudo\b/.test(part)) return false; // always asks
+		const rm = words.findIndex((word) => word === "rm" || word.endsWith("/rm"));
+		if (rm >= 0) {
+			const targets = words.slice(rm + 1).filter((w) => !w.startsWith("-"));
+			if (targets.length === 0 || !targets.every((t) => isTempPath(at(t)))) return false;
+		} else if (!/\bgit\s+(reset|clean)\b/.test(part) || !isTempPath(dir)) {
+			return false;
+		}
+	}
+	return true;
+}
+
 function sensitivePath(pathValue: string, cwd: string): string | undefined {
 	const abs = resolve(cwd, pathValue.replace(/^@/, ""));
 	const rel = relative(cwd, abs).replace(/\\/g, "/");
@@ -731,7 +765,7 @@ export default function (pi: ExtensionAPI) {
 
 		if (event.toolName === "bash" && typeof event.input.command === "string") {
 			const reason = suspiciousBash(event.input.command);
-			if (!reason) return undefined;
+			if (!reason || onlyTouchesTemp(event.input.command, ctx.cwd)) return undefined;
 			if (!ctx.hasUI) {
 				return { block: true, reason: `data-oriented-agent blocked ${reason} in non-interactive mode` };
 			}

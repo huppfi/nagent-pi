@@ -1,0 +1,19 @@
+{
+  "name": "nagent-pi",
+  "version": "0.1.0",
+  "description": "Nagent-style, data-oriented workflow resources for Pi: extension, skill, and prompt template",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huppfi/nagent-pi.git"
+  },
+  "pi": {
+    "extensions": ["./.pi/extensions/data-oriented-agent.ts"],
+    "skills": ["./.pi/skills"],
+    "prompts": ["./.pi/prompts/*.md"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

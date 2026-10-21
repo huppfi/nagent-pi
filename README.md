@@ -33,13 +33,27 @@ Also included:
 
 Automatic behavior when the extension is loaded:
 
-- injects data-oriented workflow guidance into Pi's system prompt
+- adds a `data_oriented_workflow` section to Pi's structured system prompt
 - exports a Markdown transcript after agent runs
 - writes automatic restart checkpoints after large/old branch deltas
 - makes Pi's normal compaction use data-oriented/nagent-style summary instructions
 - guards risky writes and shell commands for protected paths/destructive operations
 
-## Install globally
+## Install as a Pi package (recommended)
+
+```bash
+pi install git:github.com/huppfi/nagent-pi
+```
+
+Add `-l` to install for the current project only. `pi update --extensions` pulls new versions. For development, install a local checkout instead; Pi loads it in place without copying:
+
+```bash
+pi install /path/to/nagent-pi
+```
+
+Use either the package or the copy scripts below, not both.
+
+## Install globally by copying
 
 ```bash
 git clone https://github.com/huppfi/nagent-pi.git
@@ -114,3 +128,5 @@ Generated per project:
 ```
 
 These files are intentionally inspectable and editable. Commit them only when they are useful project knowledge; otherwise keep them local.
+
+The extension creates `.pi/artifacts/data-agent/.gitignore` (once, without overwriting) that excludes `sessions/`, `checkpoints/`, and `state/`, because transcripts and branch tails can contain secrets from tool output. Campaigns and knowledge files stay committable. Edit that file to change the policy.

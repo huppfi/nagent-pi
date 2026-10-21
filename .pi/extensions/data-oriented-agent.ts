@@ -1,12 +1,12 @@
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { existsSync, realpathSync } from "node:fs";
+import { compact, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join, relative, resolve } from "node:path";
 
 const EXTENSION_ID = "data-oriented-agent";
 const ARTIFACT_ROOT = join(".pi", "artifacts", "data-agent");
+// Transcripts, branch tails, and machine state can contain secrets from tool output.
+const ARTIFACT_GITIGNORE = ["sessions/", "checkpoints/", "state/", ""].join("\n");
 const MAX_TRANSCRIPT_TEXT = 12_000;
 const CHECKPOINT_TAIL_ENTRIES = 24;
 const AUTO_CHECKPOINT_INTERVAL_MS = 60 * 60 * 1000;
@@ -77,32 +77,6 @@ type AutoState = {
 	lastCheckpointBytes?: number;
 	lastCheckpointEntryCount?: number;
 };
-
-type PiCompactionFunction = (...args: unknown[]) => Promise<unknown>;
-let piCompactionFunction: PiCompactionFunction | undefined;
-
-async function loadPiCompactionFunction(): Promise<PiCompactionFunction | undefined> {
-	if (piCompactionFunction) return piCompactionFunction;
-	const argvPath = process.argv[1];
-	const candidates: string[] = [];
-	if (argvPath) {
-		try {
-			const cliPath = realpathSync(argvPath);
-			candidates.push(join(dirname(dirname(cliPath)), "dist", "index.js"));
-		} catch {
-			// Ignore resolution failures and fall through to default compaction.
-		}
-	}
-	for (const candidate of candidates) {
-		if (!existsSync(candidate)) continue;
-		const mod = await import(pathToFileURL(candidate).href) as { compact?: PiCompactionFunction };
-		if (typeof mod.compact === "function") {
-			piCompactionFunction = mod.compact;
-			return piCompactionFunction;
-		}
-	}
-	return undefined;
-}
 
 function textParts(content: unknown): string[] {
 	if (typeof content === "string") return [content];
@@ -183,16 +157,11 @@ function getBranch(ctx: ExtensionContext | ExtensionCommandContext): SessionEntr
 }
 
 function getSessionId(ctx: ExtensionContext | ExtensionCommandContext): string {
-	const sm = ctx.sessionManager as unknown as { getSessionId?: () => string; getSessionFile?: () => string | undefined };
-	const id = sm.getSessionId?.();
-	if (id) return slugify(id, "session");
-	const file = sm.getSessionFile?.();
-	return slugify(file ? basename(file) : "session");
+	return slugify(ctx.sessionManager.getSessionId(), "session");
 }
 
 function getSessionFile(ctx: ExtensionContext | ExtensionCommandContext): string | undefined {
-	const sm = ctx.sessionManager as unknown as { getSessionFile?: () => string | undefined };
-	return sm.getSessionFile?.();
+	return ctx.sessionManager.getSessionFile();
 }
 
 function branchBytes(entries: SessionEntry[]): number {
@@ -378,12 +347,6 @@ function dataCompactInstructions(extra: string): string {
 	].filter(Boolean).join("\n");
 }
 
-function getCompact(ctx: ExtensionContext | ExtensionCommandContext): ((options: { customInstructions: string; onComplete?: () => void; onError?: (error: Error) => void }) => void) | undefined {
-	return (ctx as unknown as {
-		compact?: (options: { customInstructions: string; onComplete?: () => void; onError?: (error: Error) => void }) => void;
-	}).compact;
-}
-
 async function runAutomaticMaintenance(ctx: ExtensionContext): Promise<string[]> {
 	const entries = getBranch(ctx);
 	const bytes = branchBytes(entries);
@@ -449,9 +412,16 @@ async function writeTranscript(ctx: ExtensionContext | ExtensionCommandContext):
 	return transcriptPath;
 }
 
+async function ensureArtifactGitignore(root: string): Promise<void> {
+	await writeFile(join(root, ".gitignore"), ARTIFACT_GITIGNORE, { encoding: "utf8", flag: "wx" }).catch((error: NodeJS.ErrnoException) => {
+		if (error.code !== "EEXIST") throw error;
+	});
+}
+
 async function writeIndex(ctx: ExtensionContext | ExtensionCommandContext, extraLines: string[] = []): Promise<string> {
 	const root = artifactRoot(ctx.cwd);
 	await mkdir(root, { recursive: true });
+	await ensureArtifactGitignore(root);
 	const relRoot = relative(ctx.cwd, root) || root;
 	const content = [
 		"# Data-oriented Pi artifacts",
@@ -469,6 +439,8 @@ async function writeIndex(ctx: ExtensionContext | ExtensionCommandContext, extra
 		"- `checkpoints/*.md` — user-created restart/checkpoint files",
 		"- `campaigns/<slug>/campaign.md` — file-backed long-horizon plans",
 		"- `knowledge/*.md` — distilled facts, decisions, file notes, commands, and open questions",
+		"",
+		"`.gitignore` excludes sessions, checkpoints, and state by default because they can contain secrets from tool output; edit it to commit them.",
 		"",
 		...extraLines,
 		"",
@@ -629,9 +601,30 @@ async function handleCampaign(pi: ExtensionAPI, args: string, ctx: ExtensionComm
 	await sendVisible(pi, ctx, "Usage: /data-campaign [list|new|status|add] ...");
 }
 
+function isRecursiveForcedRm(command: string): boolean {
+	for (const segment of command.split(/[;&|\n()]+/)) {
+		const words = segment.trim().split(/\s+/);
+		const rmIndex = words.findIndex((word) => word === "rm" || word.endsWith("/rm"));
+		if (rmIndex === -1) continue;
+		let recursive = false;
+		let force = false;
+		for (const word of words.slice(rmIndex + 1)) {
+			if (word === "--") break;
+			if (word === "--recursive") recursive = true;
+			else if (word === "--force") force = true;
+			else if (/^-[a-zA-Z]+$/.test(word)) {
+				if (/[rR]/.test(word)) recursive = true;
+				if (word.includes("f")) force = true;
+			}
+		}
+		if (recursive && force) return true;
+	}
+	return false;
+}
+
 function suspiciousBash(command: string): string | undefined {
+	if (isRecursiveForcedRm(command)) return "recursive forced delete";
 	const patterns: Array<[RegExp, string]> = [
-		[/\brm\s+(-[^\n;]*r[^\n;]*f|-rf|-fr)\b/, "recursive forced delete"],
 		[/\bgit\s+reset\s+--hard\b/, "git reset --hard"],
 		[/\bgit\s+clean\s+-[^\n;]*f/, "git clean -f"],
 		[/\bsudo\b/, "sudo command"],
@@ -667,9 +660,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event) => {
-		const guidance = [
-			"",
-			"# Data-oriented Pi workflow",
+		// A named section lets Pi keep its structured prompt and send only a delta,
+		// instead of replacing the whole system prompt on every run.
+		event.systemPromptOptions.sections.data_oriented_workflow = [
 			"- Treat the Pi JSONL session as durable state, but put project-relevant memory in explicit files under `.pi/artifacts/data-agent/` or project docs.",
 			"- For non-trivial work, maintain an artifact: a plan, checkpoint, campaign file, decision note, or verification log.",
 			"- Automatic maintenance exports transcripts after runs and checkpoints large/old deltas; Pi compaction uses data-oriented summary instructions when this extension is loaded.",
@@ -677,7 +670,6 @@ export default function (pi: ExtensionAPI) {
 			"- Before changing behavior, inspect the real input data, current files, and tests. State what was verified.",
 			"- Prefer smallest correct transforms over speculative abstractions.",
 		].join("\n");
-		return { systemPrompt: `${event.systemPrompt}\n${guidance}` };
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
@@ -685,20 +677,22 @@ export default function (pi: ExtensionAPI) {
 		if (!model) return undefined;
 
 		try {
-			const runPiCompaction = await loadPiCompactionFunction();
-			if (!runPiCompaction) return undefined;
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 			if (!auth.ok) {
 				if (ctx.hasUI) ctx.ui.notify(`Data-oriented compaction auth failed: ${auth.error}; using Pi default`, "warning");
 				return undefined;
 			}
-			const result = await runPiCompaction(
+			// Route through the model registry so extension-registered providers work like Pi's own compaction.
+			const result = await compact(
 				event.preparation,
 				model,
 				auth.apiKey,
-				auth.headers,
+				auth.headers && Object.fromEntries(Object.entries(auth.headers).filter((header): header is [string, string] => header[1] !== null)),
 				dataCompactInstructions(event.customInstructions ?? ""),
 				event.signal,
+				pi.getThinkingLevel(),
+				(streamModel, context, options) => ctx.modelRegistry.streamSimple(streamModel, context, options),
+				auth.env,
 			);
 			if (ctx.hasUI) ctx.ui.notify("Using data-oriented summary format for Pi compaction", "info");
 			return { compaction: result };
@@ -825,12 +819,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("data-compact", {
 		description: "Trigger Pi's native compaction now with optional extra data-oriented instructions",
 		handler: async (args, ctx) => {
-			const compact = getCompact(ctx);
-			if (!compact) {
-				await sendVisible(pi, ctx, "Pi compaction API is not available in this mode/version.");
-				return;
-			}
-			compact({
+			ctx.compact({
 				customInstructions: dataCompactInstructions(args),
 				onComplete: () => {
 					void writeTranscript(ctx).catch(() => undefined);

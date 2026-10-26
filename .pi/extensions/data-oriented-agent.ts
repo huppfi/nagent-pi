@@ -2,6 +2,7 @@ import { compact, type ExtensionAPI, type ExtensionCommandContext, type Extensio
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const EXTENSION_ID = "data-oriented-agent";
 const ARTIFACT_ROOT = join(".pi", "artifacts", "data-agent");
@@ -11,6 +12,10 @@ const MAX_TRANSCRIPT_TEXT = 12_000;
 const CHECKPOINT_TAIL_ENTRIES = 24;
 const AUTO_CHECKPOINT_INTERVAL_MS = 60 * 60 * 1000;
 const AUTO_CHECKPOINT_MAX_NEW_BYTES = 256 * 1024;
+// Operating rules, a short data-oriented design rule set (see nagent-context/README.md),
+// injected on every run.
+const CONTEXT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "nagent-context");
+const DOD_RULES_PATH = join(CONTEXT_DIR, "data-oriented-design.md");
 
 const artifactRoot = (cwd: string) => resolve(cwd, ARTIFACT_ROOT);
 const sessionsRoot = (cwd: string) => join(artifactRoot(cwd), "sessions");
@@ -683,17 +688,36 @@ export default function (pi: ExtensionAPI) {
 	if (globalState.__dataOrientedAgentLoaded) return;
 	globalState.__dataOrientedAgentLoaded = true;
 
+	// Read once at load and kept byte-identical across runs so the section stays in
+	// the cached prompt prefix. A missing file disables only the rules, never the guards.
+	let dodRules: string | undefined;
+	let dodRulesError: string | undefined;
+	const dodRulesLoaded = readFile(DOD_RULES_PATH, "utf8").then(
+		(text) => {
+			dodRules = text.trim();
+		},
+		(error: unknown) => {
+			dodRulesError = error instanceof Error ? error.message : String(error);
+		},
+	);
+
 	pi.on("session_shutdown", async () => {
 		globalState.__dataOrientedAgentLoaded = false;
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		await dodRulesLoaded;
 		if (ctx.hasUI) {
-			ctx.ui.setStatus(EXTENSION_ID, "data artifacts on");
+			ctx.ui.setStatus(EXTENSION_ID, dodRules ? "data artifacts on · DOD rules on" : "data artifacts on · DOD rules MISSING");
+			if (dodRulesError) ctx.ui.notify(`Data-oriented design rules not loaded: ${dodRulesError}`, "warning");
+		} else if (dodRulesError) {
+			console.error(`Data-oriented design rules not loaded: ${dodRulesError}`);
 		}
 	});
 
 	pi.on("before_agent_start", async (event) => {
+		await dodRulesLoaded;
+		if (dodRules) event.systemPromptOptions.sections.data_oriented_design = dodRules;
 		// A named section lets Pi keep its structured prompt and send only a delta,
 		// instead of replacing the whole system prompt on every run.
 		event.systemPromptOptions.sections.data_oriented_workflow = [
@@ -836,6 +860,7 @@ export default function (pi: ExtensionAPI) {
 				`- read_files: ${ops.readFiles.length}`,
 				`- modified_files: ${ops.modifiedFiles.length}`,
 				`- shell_commands: ${ops.shellCommands.length}`,
+				`- dod_rules: ${dodRules ? `injected (${Buffer.byteLength(dodRules, "utf8")} bytes) from ${DOD_RULES_PATH}` : `MISSING (${dodRulesError ?? "not loaded"})`}`,
 				"",
 				"Automatic maintenance:",
 				`- checkpoint interval ms: ${AUTO_CHECKPOINT_INTERVAL_MS}`,

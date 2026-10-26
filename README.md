@@ -33,6 +33,7 @@ Also included:
 
 Automatic behavior when the extension is loaded:
 
+- adds short data-oriented design operating rules (`.pi/nagent-context/data-oriented-design.md`), including a hard no-runtime-allocation rule, as a `data_oriented_design` prompt section. See [`.pi/nagent-context/README.md`](.pi/nagent-context/README.md)
 - adds a `data_oriented_workflow` section to Pi's structured system prompt
 - exports a Markdown transcript after agent runs
 - writes automatic restart checkpoints after large/old branch deltas

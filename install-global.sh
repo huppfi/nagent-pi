@@ -9,6 +9,8 @@ cp "$src_dir/.pi/extensions/data-oriented-agent.ts" "$agent_dir/extensions/data-
 rm -rf "$agent_dir/skills/data-oriented-workflow"
 cp -R "$src_dir/.pi/skills/data-oriented-workflow" "$agent_dir/skills/data-oriented-workflow"
 cp "$src_dir/.pi/prompts/data-start.md" "$agent_dir/prompts/data-start.md"
+rm -rf "$agent_dir/nagent-context"
+cp -R "$src_dir/.pi/nagent-context" "$agent_dir/nagent-context"
 
 cat <<MSG
 Installed nagent-pi resources to $agent_dir

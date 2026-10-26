@@ -19,6 +19,7 @@ Use Pi's native session, tool-call, compaction, and branching features. Do not e
 4. Automatic maintenance exports transcripts after runs and checkpoints large/old deltas; Pi's native compaction should use data-oriented summary instructions when the extension is loaded.
 5. Before changing behavior, inspect real files and tests. State what was verified.
 6. When output is wrong, fix the prompt/generator/input when possible; do not silently patch generated artifacts and leave the cause intact.
+7. Follow the `data_oriented_design` operating rules the extension injects (input/output first, skip unneeded work, `ASSUMPTION` labels, no runtime allocation). They live in `nagent-context/` next to the extension's `extensions/` directory; edit them there.
 
 ## Commands supplied by the extension
 

@@ -35,10 +35,20 @@ Automatic behavior when the extension is loaded:
 
 - adds short data-oriented design operating rules (`.pi/nagent-context/data-oriented-design.md`), including a hard no-runtime-allocation rule, as a `data_oriented_design` prompt section. See [`.pi/nagent-context/README.md`](.pi/nagent-context/README.md)
 - adds a `data_oriented_workflow` section to Pi's structured system prompt
-- exports a Markdown transcript after agent runs
+- exports a Markdown transcript after agent runs, appending only new entries (it is rewritten in full only after a branch switch or an outside edit)
 - writes automatic restart checkpoints after large/old branch deltas
 - makes Pi's normal compaction use data-oriented/nagent-style summary instructions
-- guards risky writes and shell commands for protected paths/destructive operations
+- guards risky writes and shell commands for protected paths/destructive operations (see [Guard](#guard))
+
+Artifact files are written atomically (temp file, then rename), and files whose content didn't change are not rewritten. A state file that exists but can't be read or parsed is reported and left alone, never reset.
+
+## Guard
+
+The guard catches common accidents. It is **not a security boundary**: it matches command text against a deny list, so anything it doesn't recognize (`eval`, a script, an interpreter one-liner) runs without asking.
+
+- `write`/`edit` to `.git/`, `node_modules/`, `.env` or `~/.ssh/` is blocked.
+- These bash commands ask first (and are blocked in non-interactive mode): recursive `rm` (with or without `-f`: the agent's shell has no terminal, so `rm -r` never prompts), `find -delete` / `-exec rm`, `git reset --hard`, `git clean -f`, `git checkout -- …` / `.` / `-f`, `git restore` (without `--staged`), `git stash drop|clear`, `git branch -D`, `git push --force` / `+ref`, `dd of=`, `mkfs` / `wipefs` / `shred`, `sudo`, and shell redirection or `tee` into `.env`, `.git/` or `.ssh/`.
+- Exception: `rm`, `find` and local git commands run without asking when every target (or the folder git runs in) is strictly inside a real temp root (`os.tmpdir()`, `$TMPDIR`, `/tmp`, `/var/tmp`), after resolving `..` and symlinks. A folder that is merely *named* like one (`~/project-temp`) does not count. Pipes, subshells, command substitution, background jobs, `pushd`, `git -C` and unexpanded variables other than the temp ones always ask.
 
 ## Install as a Pi package (recommended)
 
@@ -122,6 +132,7 @@ Generated per project:
 .pi/artifacts/data-agent/
   README.md
   sessions/<session-id>/transcript.md
+  sessions/<session-id>/files.md
   checkpoints/*.md
   campaigns/<slug>/campaign.md
   knowledge/*.md
